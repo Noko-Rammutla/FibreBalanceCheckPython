@@ -6,7 +6,6 @@ Created on Sun May 12 04:57:36 2019
 """
 
 import requests
-from bs4 import BeautifulSoup
 import re
 import json
 import pickle
@@ -41,6 +40,37 @@ class WebCache:
         return self.pages[lookup]
     
 
+def GetInputs(page, attrib="name"):
+    results = {}
+    for s in re.findall(r'\<input.*/>', page):
+        name = re.findall(attrib + r'=".*?"', s)
+        value = re.findall(r'value=".*?"', s)
+        if len(name) == 1 and len(value) == 1:
+            results[name[0][len(attrib)+2:-1]] = value[0][7:-1]
+    return results
+
+def GetLinks(page):
+    results = []
+    for s in re.findall(r'\<a.*>', page):
+        href = re.findall(r'href=".*?"', s)
+        if len(href) == 1:
+            results.append(href[0][6:-1])
+    return results
+
+def GetSpan(page, ID):
+    results = []
+    for s in re.findall(r'\<span.*?\</span>', page, re.DOTALL):
+        if s.find('id="{0}"'.format(ID)) != -1:
+            text = s[s.find('>') + 1:-7]
+            text = text.replace("<b>", "")
+            text = text.replace("</b>", "")
+            results.append(text)
+    if len(results) == 1:
+        return results[0]
+    else:
+        return ""
+    
+
 class WebAfricaUsageRequest:
     def __init__(self, Session):
         self.urls = {
@@ -56,10 +86,9 @@ class WebAfricaUsageRequest:
         self.session.clear()
         home = self.session.get(self.urls["home"])
         #get login token
-        soup = BeautifulSoup(home.text, features="html.parser")
-        token = soup.find('input', {'name': 'token'})
-        if token != None:
-            token = token.get('value')
+        inputs = GetInputs(home.text)
+        if "token" in inputs:
+            token = inputs["token"]
         else:
             raise AttributeError("Home page does not contain login token")
         #login to website
@@ -69,31 +98,30 @@ class WebAfricaUsageRequest:
                 "password": password,
                 "rememberme": "on",
         })
+        return home.text
             
     def GetProductIds(self):
         products = self.session.get(self.urls["products"])
-        soup = BeautifulSoup(products.text, features="html.parser")
         ids = {}
-        for link in soup.find_all('a'):
-            href = link.get('href')
-            if href and href.find('LoginToDSLConsole') != -1:
-                result = re.findall(r'id=\d+', href)
+        for link in GetLinks(products.text):
+            if link.find('LoginToDSLConsole') != -1:
+                result = re.findall(r'id=\d+', link)
                 if len(result) == 1:
                     ids[result[0]] = True
         return list(ids.keys())
     
     def GetProduct(self, productId):
         page = self.session.get(self.urls['product'].format(productId=productId))
-        soup = BeautifulSoup(page.text, features="html.parser")
-        results = {"id": productId[3:]}
-        lastUpdate = soup.find('span', {'id': 'ctl00_ctl00_contentDefault_contentControlPanel_lbllastUpdted'})
-        if lastUpdate:
-            results["lastUpdate"] = lastUpdate.text
-        lteUsage = soup.find('span', {'id': 'ctl00_ctl00_contentDefault_contentControlPanel_lblAnytimeCap'})
-        if lteUsage and lteUsage.text != '':
-            results["lteUsage"] = lteUsage.text
+        results = {
+                "id": productId[3:],
+                "packageName": GetInputs(page.text, 'data-role')['packageName']
+        }
+        results["lastUpdate"] = GetSpan(page.text, 'ctl00_ctl00_contentDefault_contentControlPanel_lbllastUpdted')
+        lteUsage = GetSpan(page.text, 'ctl00_ctl00_contentDefault_contentControlPanel_lblAnytimeCap')
+        if lteUsage != '':
+            results["lteUsage"] = lteUsage
         else:
-            username = soup.find('input', {'data-role': 'userName'}).get('value')
+            username = GetInputs(page.text, 'data-role')['userName']
             response = self.session.post(self.urls["fibre"], {
                     "cmd": "getfupinfo",
                     "username": username,
@@ -104,8 +132,6 @@ class WebAfricaUsageRequest:
             results["fibreUsage"] = "({:.2f} GB of {:.2f} GB)".format(usage, total)
         return results
     
-        
-
 if __name__ == "__main__":
     username = ""
     password = ""
@@ -124,6 +150,8 @@ if __name__ == "__main__":
     pages = []
     for productId in ids:
         pages.append(webAfrica.GetProduct(productId))
-    print(pages)
+    print(json.dumps(pages, indent=2))
     
     Cache.save()
+    
+   
